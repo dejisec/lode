@@ -114,7 +114,14 @@ fn render_chat_area(frame: &mut Frame, app: &App, area: Rect) {
     }
 
     let visible_height = inner.height as usize;
-    let total_lines = lines.len();
+    let available_width = inner.width.saturating_sub(0) as usize; // no extra padding needed
+
+    // Calculate wrapped line count for proper scrolling
+    let total_lines: usize = lines
+        .iter()
+        .map(|line| wrapped_line_count(line, available_width))
+        .sum();
+
     let max_scroll = total_lines.saturating_sub(visible_height);
 
     // scroll_offset is "lines from bottom": 0 = at bottom, max = at top
@@ -127,18 +134,50 @@ fn render_chat_area(frame: &mut Frame, app: &App, area: Rect) {
     frame.render_widget(paragraph, inner);
 }
 
-pub fn calculate_total_lines(app: &App) -> usize {
+fn wrapped_line_count(line: &Line, width: usize) -> usize {
+    if width == 0 {
+        return 1;
+    }
+    let char_count: usize = line.spans.iter().map(|s| s.content.chars().count()).sum();
+    if char_count == 0 {
+        return 1;
+    }
+    (char_count + width - 1) / width
+}
+
+pub fn calculate_total_lines(app: &App, width: u16) -> usize {
     let md_renderer = MarkdownRenderer::new();
+    let available_width = width.saturating_sub(2) as usize; // account for borders
     let mut count = 0;
+
     for msg in &app.messages {
         match msg.role {
-            MessageRole::User | MessageRole::System => {
-                count += 1; // single line for user/system messages
+            MessageRole::User => {
+                let prefix_len = 5; // "You: "
+                let content_len = msg.content.chars().count();
+                let total_len = prefix_len + content_len;
+                count += if available_width > 0 {
+                    (total_len + available_width - 1) / available_width
+                } else {
+                    1
+                };
+            }
+            MessageRole::System => {
+                let prefix_len = 2; // "→ "
+                let content_len = msg.content.chars().count();
+                let total_len = prefix_len + content_len;
+                count += if available_width > 0 {
+                    (total_len + available_width - 1) / available_width
+                } else {
+                    1
+                };
             }
             MessageRole::Assistant => {
                 count += 1; // "Lode:" prefix line
                 let rendered = md_renderer.render(&msg.content);
-                count += rendered.lines.len();
+                for line in &rendered.lines {
+                    count += wrapped_line_count(line, available_width);
+                }
             }
         }
         count += 1; // blank line after each message
@@ -147,10 +186,16 @@ pub fn calculate_total_lines(app: &App) -> usize {
 }
 
 fn render_input(frame: &mut Frame, app: &App, area: Rect) {
-    let (border_color, title) = if app.is_processing {
-        (Color::Yellow, " Processing... ")
+    let (border_color, title) = if app.is_clarifying() {
+        if let Some(q) = app.current_question() {
+            (Color::Magenta, format!(" {} ", q.label))
+        } else {
+            (Color::Magenta, " Answer ".to_string())
+        }
+    } else if app.is_processing {
+        (Color::Yellow, " Processing... ".to_string())
     } else {
-        (Color::Cyan, " Query ")
+        (Color::Cyan, " Query ".to_string())
     };
 
     let block = Block::default()
@@ -162,13 +207,15 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
     let inner = block.inner(area);
     frame.render_widget(block, area);
 
-    let display_text = if app.is_processing {
+    let display_text = if app.is_clarifying() {
+        format!("{}▏", app.input)
+    } else if app.is_processing {
         app.status.clone().unwrap_or_default()
     } else {
         format!("{}▏", app.input)
     };
 
-    let text_style = if app.is_processing {
+    let text_style = if app.is_processing && !app.is_clarifying() {
         Style::default().fg(Color::DarkGray).italic()
     } else {
         Style::default().fg(Color::White)

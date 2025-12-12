@@ -5,16 +5,17 @@ mod run;
 mod tui;
 
 use std::process::Stdio;
+use std::sync::Arc;
 
 use clap::Parser;
 use tokio::io::{AsyncBufReadExt, AsyncWriteExt, BufReader};
 use tokio::process::Command;
-use tokio::sync::mpsc;
+use tokio::sync::{Mutex, mpsc, oneshot};
 use uuid::Uuid;
 
 use cli::{Cli, RequestConfig, load_config};
 use output::Output;
-use protocol::{Request, Response};
+use protocol::{ClarifyingAnswers, Request, Response};
 use run::{
     RunContext, setup_run_directory, write_metadata, write_output, write_prompt,
     write_raw_response, write_request,
@@ -40,19 +41,36 @@ async fn run_tui(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let mut tui_instance = Tui::new()?;
 
     let event_tx = app.event_sender();
+    let answer_slot: Arc<Mutex<Option<oneshot::Sender<Vec<String>>>>> = Arc::new(Mutex::new(None));
+
+    let answer_slot_submit = answer_slot.clone();
+    let answer_slot_answers = answer_slot.clone();
 
     tui_instance
-        .run(&mut app, |query| {
-            let query = query.to_string();
-            let config = config.clone();
-            let tx = event_tx.clone();
+        .run(
+            &mut app,
+            move |query| {
+                let query = query.to_string();
+                let config = config.clone();
+                let tx = event_tx.clone();
+                let answer_slot = answer_slot_submit.clone();
 
-            tokio::spawn(async move {
-                if let Err(e) = run_research_query(&query, &config, tx.clone()).await {
-                    let _ = tx.send(AppEvent::Error(e));
-                }
-            });
-        })
+                tokio::spawn(async move {
+                    if let Err(e) = run_research_query(&query, &config, tx.clone(), answer_slot).await {
+                        let _ = tx.send(AppEvent::Error(e));
+                    }
+                });
+            },
+            move |answers| {
+                let slot = answer_slot_answers.clone();
+                tokio::spawn(async move {
+                    let mut guard = slot.lock().await;
+                    if let Some(tx) = guard.take() {
+                        let _ = tx.send(answers);
+                    }
+                });
+            },
+        )
         .await?;
 
     Ok(())
@@ -62,6 +80,7 @@ async fn run_research_query(
     query: &str,
     config: &RequestConfig,
     event_tx: mpsc::UnboundedSender<AppEvent>,
+    answer_slot: Arc<Mutex<Option<oneshot::Sender<Vec<String>>>>>,
 ) -> Result<(), String> {
     let run_id = Uuid::new_v4().to_string();
     let request = Request {
@@ -95,13 +114,13 @@ async fn run_research_query(
         .await
         .map_err(|e| e.to_string())?;
     stdin.write_all(b"\n").await.map_err(|e| e.to_string())?;
-    drop(stdin);
 
     let stdout = child.stdout.take().expect("Failed to open stdout");
     let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
 
     let mut success = false;
+    let mut answers_sent = false;
 
     while let Some(line) = lines.next_line().await.map_err(|e| e.to_string())? {
         if let Ok(response) = serde_json::from_str::<Response>(&line) {
@@ -112,6 +131,33 @@ async fn run_research_query(
                 } => {
                     ctx.trace_id = Some(trace_id.clone());
                     ctx.trace_url = Some(trace_url.clone());
+                }
+                Response::ClarifyingQuestions { .. } if !answers_sent => {
+                    let _ = event_tx.send(AppEvent::BackendResponse(response.clone()));
+
+                    let (tx, rx) = oneshot::channel();
+                    {
+                        let mut slot = answer_slot.lock().await;
+                        *slot = Some(tx);
+                    }
+
+                    match rx.await {
+                        Ok(answers) => {
+                            let answers_msg = ClarifyingAnswers { answers };
+                            let answers_json =
+                                serde_json::to_string(&answers_msg).map_err(|e| e.to_string())?;
+                            stdin
+                                .write_all(answers_json.as_bytes())
+                                .await
+                                .map_err(|e| e.to_string())?;
+                            stdin.write_all(b"\n").await.map_err(|e| e.to_string())?;
+                            answers_sent = true;
+                        }
+                        Err(_) => {
+                            return Err("Failed to receive clarifying answers".to_string());
+                        }
+                    }
+                    continue;
                 }
                 Response::Prompt {
                     agent,
@@ -158,6 +204,7 @@ async fn run_research_query(
         }
     }
 
+    drop(stdin);
     let status = child.wait().await.map_err(|e| e.to_string())?;
 
     if let Some(ref markdown) = ctx.markdown_report {
@@ -176,6 +223,8 @@ async fn run_research_query(
 }
 
 async fn run_single_query(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
+    use std::io::{BufRead, Write};
+
     let output = Output::new(cli.json, cli.quiet);
     let query = cli.query.join(" ");
 
@@ -212,13 +261,13 @@ async fn run_single_query(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let request_json = serde_json::to_string(&request)?;
     stdin.write_all(request_json.as_bytes()).await?;
     stdin.write_all(b"\n").await?;
-    drop(stdin);
 
     let stdout = child.stdout.take().expect("Failed to open stdout");
     let reader = BufReader::new(stdout);
     let mut lines = reader.lines();
 
     let mut success = false;
+    let mut answers_sent = false;
 
     while let Some(line) = lines.next_line().await? {
         match serde_json::from_str::<Response>(&line) {
@@ -233,6 +282,31 @@ async fn run_single_query(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                     output.trace(&trace_id, &trace_url);
                     ctx.trace_id = Some(trace_id);
                     ctx.trace_url = Some(trace_url);
+                }
+                Response::ClarifyingQuestions { questions } if !answers_sent => {
+                    eprintln!("\nPlease answer these clarifying questions:");
+                    let mut answers = Vec::new();
+                    let term_stdin = std::io::stdin();
+
+                    for (i, q) in questions.iter().enumerate() {
+                        eprintln!("\n{}. [{}] {}", i + 1, q.label, q.question);
+                        eprint!("> ");
+                        std::io::stderr().flush().ok();
+
+                        let mut answer = String::new();
+                        term_stdin.lock().read_line(&mut answer).ok();
+                        answers.push(answer.trim().to_string());
+                    }
+
+                    eprintln!();
+                    let answers_msg = ClarifyingAnswers { answers };
+                    let answers_json = serde_json::to_string(&answers_msg)?;
+                    stdin.write_all(answers_json.as_bytes()).await?;
+                    stdin.write_all(b"\n").await?;
+                    answers_sent = true;
+                }
+                Response::ClarifyingQuestions { .. } => {
+                    // Already sent answers, ignore
                 }
                 Response::Prompt {
                     agent,
@@ -286,6 +360,8 @@ async fn run_single_query(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
             }
         }
     }
+
+    drop(stdin);
 
     let status = child.wait().await?;
 

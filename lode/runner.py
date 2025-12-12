@@ -8,7 +8,7 @@ from dataclasses import dataclass
 from typing import Any
 
 from .config import Config
-from .manager import ResearchManager, PromptEvent, ResponseEvent
+from .manager import ResearchManager, PromptEvent, ResponseEvent, ClarifyingQuestionsEvent
 
 
 @dataclass
@@ -56,6 +56,13 @@ def emit_raw_response(
     if token_usage:
         msg["token_usage"] = token_usage
     emit(msg)
+
+
+def emit_clarifying_questions(questions: list[dict[str, str]]) -> None:
+    emit({
+        "type": "clarifying_questions",
+        "questions": questions,
+    })
 
 
 def emit_report(short_summary: str, markdown_report: str, follow_up_questions: list[str]) -> None:
@@ -108,14 +115,34 @@ def parse_request(line: str) -> Request:
     )
 
 
-async def run(request: Request) -> None:
+async def run_clarify(request: Request, manager: ResearchManager) -> None:
+    """Run the clarification phase and emit questions."""
+    async for item in manager.clarify(request.query):
+        if isinstance(item, PromptEvent):
+            emit_prompt(item.agent, item.sequence, item.content)
+        elif isinstance(item, ResponseEvent):
+            emit_raw_response(
+                item.agent,
+                item.sequence,
+                item.content,
+                item.token_usage,
+            )
+        elif isinstance(item, ClarifyingQuestionsEvent):
+            emit_clarifying_questions(item.questions)
+        elif isinstance(item, str):
+            emit_status(item)
+
+
+async def run_research(
+    request: Request,
+    manager: ResearchManager,
+    clarifying_answers: list[str] | None,
+    start_time: float,
+) -> None:
     """Execute the research workflow and emit JSON responses."""
     from .agents import ReportData
 
-    start_time = time.time()
-    manager = ResearchManager(request.config)
-
-    async for item in manager.run(request.query):
+    async for item in manager.run(request.query, clarifying_answers):
         if isinstance(item, PromptEvent):
             emit_prompt(item.agent, item.sequence, item.content)
         elif isinstance(item, ResponseEvent):
@@ -143,6 +170,18 @@ async def run(request: Request) -> None:
     emit_metadata(request.config.model, duration_ms)
 
 
+def read_clarifying_answers() -> list[str] | None:
+    """Read clarifying answers from stdin (second JSON line)."""
+    line = sys.stdin.readline().strip()
+    if not line:
+        return None
+    try:
+        data = json.loads(line)
+        return data.get("answers", [])
+    except json.JSONDecodeError:
+        return None
+
+
 async def async_main() -> None:
     line = sys.stdin.readline().strip()
     if not line:
@@ -158,7 +197,17 @@ async def async_main() -> None:
         return
 
     try:
-        await run(request)
+        start_time = time.time()
+        manager = ResearchManager(request.config)
+
+        # Phase 1: Generate and emit clarifying questions
+        await run_clarify(request, manager)
+
+        # Phase 2: Wait for answers from stdin
+        clarifying_answers = read_clarifying_answers()
+
+        # Phase 3: Run research with answers
+        await run_research(request, manager, clarifying_answers, start_time)
         emit_done(True)
     except Exception as e:
         emit_error(str(e), "RUNTIME_ERROR")

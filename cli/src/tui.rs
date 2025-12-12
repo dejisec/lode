@@ -13,8 +13,15 @@ use ratatui::Terminal;
 use ratatui::prelude::CrosstermBackend;
 use tokio::sync::mpsc;
 
-use crate::protocol::Response;
+use crate::protocol::{ClarifyingQuestion, Response};
 use widgets::{ChatMessage, MessageRole, calculate_total_lines, render_ui};
+
+#[derive(Clone)]
+pub struct ClarifyingState {
+    pub questions: Vec<ClarifyingQuestion>,
+    pub current_index: usize,
+    pub answers: Vec<String>,
+}
 
 pub struct App {
     pub messages: Vec<ChatMessage>,
@@ -23,6 +30,8 @@ pub struct App {
     pub is_processing: bool,
     pub scroll_offset: usize,
     pub should_quit: bool,
+    pub clarifying: Option<ClarifyingState>,
+    pub terminal_width: u16,
     event_rx: Option<mpsc::UnboundedReceiver<AppEvent>>,
     event_tx: mpsc::UnboundedSender<AppEvent>,
 }
@@ -43,9 +52,21 @@ impl App {
             is_processing: false,
             scroll_offset: 0,
             should_quit: false,
+            clarifying: None,
+            terminal_width: 80, // default, updated on each draw
             event_rx: Some(event_rx),
             event_tx,
         }
+    }
+
+    pub fn is_clarifying(&self) -> bool {
+        self.clarifying.is_some()
+    }
+
+    pub fn current_question(&self) -> Option<&ClarifyingQuestion> {
+        self.clarifying
+            .as_ref()
+            .and_then(|state| state.questions.get(state.current_index))
     }
 
     pub fn event_sender(&self) -> mpsc::UnboundedSender<AppEvent> {
@@ -91,6 +112,18 @@ impl App {
             }
             Response::Trace { trace_url, .. } => {
                 self.add_system_message(format!("Trace: {}", trace_url));
+            }
+            Response::ClarifyingQuestions { questions } => {
+                self.add_system_message("Please answer these clarifying questions:".to_string());
+                for (i, q) in questions.iter().enumerate() {
+                    self.add_system_message(format!("{}. [{}] {}", i + 1, q.label, q.question));
+                }
+                self.clarifying = Some(ClarifyingState {
+                    questions: questions.clone(),
+                    current_index: 0,
+                    answers: Vec::new(),
+                });
+                self.set_status(Some("Answer question 1 of 3".to_string()));
             }
             Response::Prompt {
                 agent, sequence, ..
@@ -181,12 +214,21 @@ impl Tui {
         Ok(())
     }
 
-    pub async fn run<F>(&mut self, app: &mut App, mut on_submit: F) -> io::Result<()>
+    pub async fn run<F, G>(
+        &mut self,
+        app: &mut App,
+        mut on_submit: F,
+        mut on_answers: G,
+    ) -> io::Result<()>
     where
         F: FnMut(&str) + Send,
+        G: FnMut(Vec<String>) + Send,
     {
         loop {
             app.process_events();
+
+            let size = self.terminal.size()?;
+            app.terminal_width = size.width;
 
             self.terminal.draw(|frame| {
                 render_ui(frame, app);
@@ -211,7 +253,43 @@ impl Tui {
                         app.should_quit = true;
                     }
                     KeyCode::Enter => {
-                        if !app.input.is_empty() && !app.is_processing {
+                        if app.is_clarifying() {
+                            let answer = app.input.clone();
+                            app.input.clear();
+                            app.add_user_message(answer.clone());
+
+                            let (is_complete, answers, next_index, total) = {
+                                let state = app.clarifying.as_mut().unwrap();
+                                state.answers.push(answer);
+                                state.current_index += 1;
+                                let complete = state.current_index >= state.questions.len();
+                                let answers = if complete {
+                                    Some(state.answers.clone())
+                                } else {
+                                    None
+                                };
+                                (
+                                    complete,
+                                    answers,
+                                    state.current_index,
+                                    state.questions.len(),
+                                )
+                            };
+
+                            if is_complete {
+                                app.clarifying = None;
+                                app.set_status(Some("Continuing research...".to_string()));
+                                if let Some(answers) = answers {
+                                    on_answers(answers);
+                                }
+                            } else {
+                                app.set_status(Some(format!(
+                                    "Answer question {} of {}",
+                                    next_index + 1,
+                                    total
+                                )));
+                            }
+                        } else if !app.input.is_empty() && !app.is_processing {
                             let query = app.input.clone();
                             app.input.clear();
                             app.add_user_message(query.clone());
@@ -221,15 +299,17 @@ impl Tui {
                         }
                     }
                     KeyCode::Backspace => {
-                        app.input.pop();
+                        if app.is_clarifying() || !app.is_processing {
+                            app.input.pop();
+                        }
                     }
                     KeyCode::Char(c) => {
-                        if !app.is_processing {
+                        if app.is_clarifying() || !app.is_processing {
                             app.input.push(c);
                         }
                     }
                     KeyCode::Up => {
-                        let total_lines = calculate_total_lines(app);
+                        let total_lines = calculate_total_lines(app, app.terminal_width);
                         let max_scroll = total_lines.saturating_sub(1);
                         if app.scroll_offset < max_scroll {
                             app.scroll_offset += 3;

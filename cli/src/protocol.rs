@@ -10,14 +10,25 @@ pub struct Request {
     pub config: RequestConfig,
 }
 
-#[derive(Deserialize, Serialize)]
+#[derive(Clone, Deserialize, Serialize)]
+pub struct ClarifyingQuestion {
+    pub label: String,
+    pub question: String,
+}
+
+#[derive(Serialize)]
+pub struct ClarifyingAnswers {
+    pub answers: Vec<String>,
+}
+
+#[derive(Clone, Deserialize, Serialize)]
 pub struct TokenUsage {
     pub prompt_tokens: u32,
     pub completion_tokens: u32,
     pub total_tokens: u32,
 }
 
-#[derive(Deserialize)]
+#[derive(Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
     Status {
@@ -26,6 +37,9 @@ pub enum Response {
     Trace {
         trace_id: String,
         trace_url: String,
+    },
+    ClarifyingQuestions {
+        questions: Vec<ClarifyingQuestion>,
     },
     Prompt {
         agent: String,

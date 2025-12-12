@@ -2,11 +2,13 @@
 
 import asyncio
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from agents import trace, gen_trace_id
 
 from .agents import (
+    create_clarifier_agent,
+    ClarifyingQuestions,
     create_planner_agent,
     WebSearchItem,
     WebSearchPlan,
@@ -36,6 +38,12 @@ class ResponseEvent:
 
 
 @dataclass
+class ClarifyingQuestionsEvent:
+    """Event emitted when clarifying questions are ready for the user."""
+    questions: list[dict[str, str]] = field(default_factory=list)
+
+
+@dataclass
 class MetadataEvent:
     """Event emitted with run metadata."""
     model: str
@@ -48,6 +56,7 @@ class ResearchManager:
     def __init__(self, config: Config):
         self._config = config
         self._sequence = 0
+        self._clarifier_agent = create_clarifier_agent(config.model)
         self._planner_agent = create_planner_agent(config.model, config.search_count)
         self._search_agent = create_search_agent(config.model)
         self._writer_agent = create_writer_agent(config.model)
@@ -56,15 +65,44 @@ class ResearchManager:
         self._sequence += 1
         return self._sequence
 
-    async def run(self, query: str):
+    async def clarify(self, query: str):
+        """Generate clarifying questions for the query."""
+        yield "Generating clarifying questions..."
+        clarifier_prompt = f"Query: {query}"
+        seq = self._next_sequence()
+        yield PromptEvent(agent="clarifier", sequence=seq, content=clarifier_prompt)
+
+        result = await agent_runner.run(self._clarifier_agent, clarifier_prompt)
+        questions = result.output.final_output_as(ClarifyingQuestions)
+
+        yield ResponseEvent(
+            agent="clarifier",
+            sequence=seq,
+            content=json.dumps([q.model_dump() for q in questions.questions], indent=2),
+            token_usage=result.token_usage.to_dict() if result.token_usage else None,
+        )
+
+        yield ClarifyingQuestionsEvent(
+            questions=[q.model_dump() for q in questions.questions]
+        )
+
+    async def run(self, query: str, clarifying_answers: list[str] | None = None):
         """Run the deep research process, yielding status updates, events, and the final report."""
         trace_id = gen_trace_id()
         with trace("Research trace", trace_id=trace_id):
             yield f"View trace: https://platform.openai.com/traces/trace?trace_id={trace_id}"
 
+            # Build context from clarifying answers
+            context = ""
+            if clarifying_answers:
+                context = "\n\nUser provided additional context:\n"
+                for answer in clarifying_answers:
+                    if answer.strip():
+                        context += f"- {answer}\n"
+
             # Plan searches
             yield "Planning searches..."
-            planner_prompt = f"Query: {query}"
+            planner_prompt = f"Query: {query}{context}"
             seq = self._next_sequence()
             yield PromptEvent(agent="planner", sequence=seq, content=planner_prompt)
 
@@ -111,7 +149,7 @@ class ResearchManager:
 
             # Write report
             yield "Writing report..."
-            writer_prompt = f"Original query: {query}\nSummarized search results: {search_results}"
+            writer_prompt = f"Original query: {query}{context}\nSummarized search results: {search_results}"
             seq = self._next_sequence()
             yield PromptEvent(agent="writer", sequence=seq, content=writer_prompt)
 
