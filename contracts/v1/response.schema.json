@@ -1,0 +1,104 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lode.local/contracts/v1/response.schema.json",
+  "title": "LodeResponse",
+  "description": "Streaming JSON lines from Python runner to Rust CLI",
+  "type": "object",
+  "oneOf": [
+    {
+      "type": "object",
+      "properties": {
+        "type": { "const": "status" },
+        "message": { "type": "string" }
+      },
+      "required": ["type", "message"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": { "const": "trace" },
+        "trace_id": { "type": "string" },
+        "trace_url": { "type": "string", "format": "uri" }
+      },
+      "required": ["type", "trace_id", "trace_url"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": { "const": "prompt" },
+        "agent": { "type": "string" },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "content": { "type": "string" }
+      },
+      "required": ["type", "agent", "sequence", "content"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": { "const": "raw_response" },
+        "agent": { "type": "string" },
+        "sequence": { "type": "integer", "minimum": 1 },
+        "content": { "type": "string" },
+        "token_usage": {
+          "type": "object",
+          "properties": {
+            "prompt_tokens": { "type": "integer" },
+            "completion_tokens": { "type": "integer" },
+            "total_tokens": { "type": "integer" }
+          },
+          "required": ["prompt_tokens", "completion_tokens", "total_tokens"],
+          "additionalProperties": false
+        }
+      },
+      "required": ["type", "agent", "sequence", "content"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": { "const": "report" },
+        "short_summary": { "type": "string" },
+        "markdown_report": { "type": "string" },
+        "follow_up_questions": {
+          "type": "array",
+          "items": { "type": "string" }
+        }
+      },
+      "required": ["type", "short_summary", "markdown_report", "follow_up_questions"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": { "const": "metadata" },
+        "model": { "type": "string" },
+        "total_tokens": { "type": "integer" },
+        "duration_ms": { "type": "integer" }
+      },
+      "required": ["type", "model", "duration_ms"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": { "const": "error" },
+        "message": { "type": "string" },
+        "code": { "type": "string" }
+      },
+      "required": ["type", "message"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
+        "type": { "const": "done" },
+        "success": { "type": "boolean" }
+      },
+      "required": ["type", "success"],
+      "additionalProperties": false
+    }
+  ]
+}

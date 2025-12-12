@@ -1,0 +1,43 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lode.local/contracts/v1/request.schema.json",
+  "title": "LodeRequest",
+  "description": "Request from Rust CLI to Python research runner",
+  "type": "object",
+  "properties": {
+    "version": {
+      "type": "string",
+      "const": "v1",
+      "description": "Contract version"
+    },
+    "run_id": {
+      "type": "string",
+      "format": "uuid",
+      "description": "Unique identifier for this research run"
+    },
+    "query": {
+      "type": "string",
+      "minLength": 1,
+      "description": "The research query to investigate"
+    },
+    "config": {
+      "type": "object",
+      "description": "Runtime configuration from CLI",
+      "properties": {
+        "model": {
+          "type": "string",
+          "description": "OpenAI model to use"
+        },
+        "search_count": {
+          "type": "integer",
+          "minimum": 1,
+          "description": "Number of web searches to perform"
+        }
+      },
+      "required": ["model", "search_count"],
+      "additionalProperties": false
+    }
+  },
+  "required": ["version", "run_id", "query", "config"],
+  "additionalProperties": false
+}
