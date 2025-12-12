@@ -2,6 +2,8 @@
 
 Multi-agent research system that orchestrates AI agents to perform deep web research and synthesize comprehensive reports.
 
+![Lode](assets/lode.png)
+
 ## Architecture
 
 Lode uses a hybrid Rust/Python architecture:
@@ -9,7 +11,7 @@ Lode uses a hybrid Rust/Python architecture:
 ```text
 ┌─────────────────────────────────────────────────────────────┐
 │                        Rust CLI                             │
-│  • Argument parsing, config loading                         │
+│  • Interactive TUI (default) or single-query mode           │
 │  • Process orchestration                                    │
 │  • Artifact storage (runs/<run_id>/)                        │
 │  • Output formatting (human/json/quiet)                     │
@@ -43,7 +45,7 @@ Lode uses a hybrid Rust/Python architecture:
 
 ```bash
 # Clone the repository
-git clone <repo-url>
+git clone https://github.com/dejisec/lode.git
 cd lode
 
 # Install Python dependencies
@@ -65,6 +67,28 @@ OPENAI_API_KEY=sk-...
 
 ## Usage
 
+### Interactive Mode (Default)
+
+Run without arguments to launch the interactive TUI:
+
+```bash
+./cli/target/release/lode-cli
+```
+
+This opens a chat-like interface where you can submit multiple research queries in a session. The TUI displays real-time progress and renders research reports inline.
+
+**Keyboard Controls:**
+
+| Key | Action |
+|-----|--------|
+| `Enter` | Submit query |
+| `Up/Down` | Scroll message history |
+| `Esc` or `Ctrl+C` | Quit |
+
+### Single Query Mode
+
+Pass a query directly to run a one-off research task:
+
 ```bash
 # Basic usage
 ./cli/target/release/lode-cli "What are the latest developments in quantum computing?"
@@ -84,11 +108,11 @@ OPENAI_API_KEY=sk-...
 
 ### CLI Options
 
-```
+```text
 Usage: lode-cli [OPTIONS] [QUERY]...
 
 Arguments:
-  [QUERY]...  The research query to investigate
+  [QUERY]...  The research query (omit for interactive mode)
 
 Options:
       --model <MODEL>                OpenAI model (default: gpt-4o, env: LODE_MODEL)
@@ -133,3 +157,8 @@ runs/<run_id>/
 | `LODE_MODEL` | Model to use | `gpt-4o` |
 | `LODE_SEARCH_COUNT` | Number of web searches | `5` |
 
+## API Costs
+
+Lode uses the OpenAI WebSearchTool, costing 2.5 cents per call. However, OpenAI can sometimes charge for multiple searches for a single call, so it could sometimes cost more than 2.5 cents per call.
+
+Costs are here: <https://platform.openai.com/docs/pricing#built-in-tools>
