@@ -31,7 +31,24 @@
         "search_count": {
           "type": "integer",
           "minimum": 1,
-          "description": "Number of web searches to perform"
+          "description": "Initial number of web searches to plan"
+        },
+        "max_iterations": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 10,
+          "description": "Maximum orchestrator reasoning loops"
+        },
+        "max_searches": {
+          "type": "integer",
+          "minimum": 1,
+          "default": 15,
+          "description": "Maximum total searches allowed"
+        },
+        "auto_decide": {
+          "type": "boolean",
+          "default": true,
+          "description": "Whether agent can proceed without user confirmation"
         }
       },
       "required": ["model", "search_count"],

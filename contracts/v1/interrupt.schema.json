@@ -1,0 +1,22 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://lode.local/contracts/v1/interrupt.schema.json",
+  "title": "LodeInterrupt",
+  "description": "Interrupt signal from Rust CLI to Python runner",
+  "type": "object",
+  "properties": {
+    "type": {
+      "type": "string",
+      "const": "interrupt",
+      "description": "Message type identifier"
+    },
+    "command": {
+      "type": "string",
+      "enum": ["stop", "pause", "force_write"],
+      "description": "The interrupt command to execute"
+    }
+  },
+  "required": ["type", "command"],
+  "additionalProperties": false
+}
+

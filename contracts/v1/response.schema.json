@@ -59,6 +59,54 @@
     {
       "type": "object",
       "properties": {
+        "type": { "const": "clarifying_questions" },
+        "questions": {
+          "type": "array",
+          "items": {
+            "type": "object",
+            "properties": {
+              "label": { "type": "string" },
+              "question": { "type": "string" }
+            },
+            "required": ["label", "question"],
+            "additionalProperties": false
+          }
+        }
+      },
+      "required": ["type", "questions"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "description": "Emitted when the orchestrator makes a decision",
+      "properties": {
+        "type": { "const": "decision" },
+        "action": {
+          "type": "string",
+          "enum": ["start", "search_more", "evaluate", "write", "complete"],
+          "description": "The action the orchestrator is taking"
+        },
+        "reason": {
+          "type": "string",
+          "description": "Explanation of why this action was chosen"
+        },
+        "remaining_searches": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of searches remaining in budget"
+        },
+        "remaining_iterations": {
+          "type": "integer",
+          "minimum": 0,
+          "description": "Number of iterations remaining in budget"
+        }
+      },
+      "required": ["type", "action", "reason", "remaining_searches", "remaining_iterations"],
+      "additionalProperties": false
+    },
+    {
+      "type": "object",
+      "properties": {
         "type": { "const": "report" },
         "short_summary": { "type": "string" },
         "markdown_report": { "type": "string" },

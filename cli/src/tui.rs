@@ -138,6 +138,17 @@ impl App {
                     agent, sequence
                 )));
             }
+            Response::Decision {
+                action,
+                remaining_searches,
+                remaining_iterations,
+                ..
+            } => {
+                self.set_status(Some(format!(
+                    "Decision: {} (budget: {} searches, {} iterations)",
+                    action, remaining_searches, remaining_iterations
+                )));
+            }
             Response::Report {
                 short_summary,
                 markdown_report,
@@ -214,15 +225,17 @@ impl Tui {
         Ok(())
     }
 
-    pub async fn run<F, G>(
+    pub async fn run<F, G, H>(
         &mut self,
         app: &mut App,
         mut on_submit: F,
         mut on_answers: G,
+        mut on_interrupt: H,
     ) -> io::Result<()>
     where
         F: FnMut(&str) + Send,
         G: FnMut(Vec<String>) + Send,
+        H: FnMut() + Send,
     {
         loop {
             app.process_events();
@@ -247,9 +260,18 @@ impl Tui {
 
                 match key.code {
                     KeyCode::Esc => {
-                        app.should_quit = true;
+                        if app.is_processing {
+                            on_interrupt();
+                            app.add_system_message("Stopping research...".to_string());
+                        } else {
+                            app.should_quit = true;
+                        }
                     }
                     KeyCode::Char('c') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                        if app.is_processing {
+                            on_interrupt();
+                            app.add_system_message("Stopping research...".to_string());
+                        }
                         app.should_quit = true;
                     }
                     KeyCode::Enter => {

@@ -15,7 +15,7 @@ use uuid::Uuid;
 
 use cli::{Cli, RequestConfig, load_config};
 use output::Output;
-use protocol::{ClarifyingAnswers, Request, Response};
+use protocol::{ClarifyingAnswers, InterruptCommand, Request, Response};
 use run::{
     RunContext, setup_run_directory, write_metadata, write_output, write_prompt,
     write_raw_response, write_request,
@@ -42,9 +42,13 @@ async fn run_tui(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
 
     let event_tx = app.event_sender();
     let answer_slot: Arc<Mutex<Option<oneshot::Sender<Vec<String>>>>> = Arc::new(Mutex::new(None));
+    let interrupt_tx: Arc<Mutex<Option<mpsc::UnboundedSender<InterruptCommand>>>> =
+        Arc::new(Mutex::new(None));
 
     let answer_slot_submit = answer_slot.clone();
     let answer_slot_answers = answer_slot.clone();
+    let interrupt_tx_submit = interrupt_tx.clone();
+    let interrupt_tx_tui = interrupt_tx.clone();
 
     tui_instance
         .run(
@@ -54,10 +58,26 @@ async fn run_tui(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                 let config = config.clone();
                 let tx = event_tx.clone();
                 let answer_slot = answer_slot_submit.clone();
+                let interrupt_slot = interrupt_tx_submit.clone();
 
                 tokio::spawn(async move {
-                    if let Err(e) = run_research_query(&query, &config, tx.clone(), answer_slot).await {
+                    let (int_tx, int_rx) = mpsc::unbounded_channel();
+                    {
+                        let mut guard = interrupt_slot.lock().await;
+                        *guard = Some(int_tx);
+                    }
+
+                    if let Err(e) =
+                        run_research_query(&query, &config, tx.clone(), answer_slot, Some(int_rx))
+                            .await
+                    {
                         let _ = tx.send(AppEvent::Error(e));
+                    }
+
+                    // Clear interrupt sender after query completes
+                    {
+                        let mut guard = interrupt_slot.lock().await;
+                        *guard = None;
                     }
                 });
             },
@@ -70,9 +90,34 @@ async fn run_tui(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 });
             },
+            move || {
+                let slot = interrupt_tx_tui.clone();
+                tokio::spawn(async move {
+                    let guard = slot.lock().await;
+                    if let Some(ref tx) = *guard {
+                        let _ = tx.send(InterruptCommand::Stop);
+                    }
+                });
+            },
         )
         .await?;
 
+    Ok(())
+}
+
+async fn send_interrupt(
+    stdin: &Arc<Mutex<tokio::process::ChildStdin>>,
+    command: InterruptCommand,
+) -> Result<(), String> {
+    use protocol::Interrupt;
+    let interrupt = Interrupt::new(command);
+    let json = interrupt.to_json();
+    let mut guard = stdin.lock().await;
+    guard
+        .write_all(json.as_bytes())
+        .await
+        .map_err(|e| e.to_string())?;
+    guard.write_all(b"\n").await.map_err(|e| e.to_string())?;
     Ok(())
 }
 
@@ -81,6 +126,7 @@ async fn run_research_query(
     config: &RequestConfig,
     event_tx: mpsc::UnboundedSender<AppEvent>,
     answer_slot: Arc<Mutex<Option<oneshot::Sender<Vec<String>>>>>,
+    interrupt_rx: Option<mpsc::UnboundedReceiver<InterruptCommand>>,
 ) -> Result<(), String> {
     let run_id = Uuid::new_v4().to_string();
     let request = Request {
@@ -107,13 +153,26 @@ async fn run_research_query(
         .spawn()
         .map_err(|e| e.to_string())?;
 
-    let mut stdin = child.stdin.take().expect("Failed to open stdin");
+    let stdin = Arc::new(Mutex::new(child.stdin.take().expect("Failed to open stdin")));
     let request_json = serde_json::to_string(&request).map_err(|e| e.to_string())?;
-    stdin
-        .write_all(request_json.as_bytes())
-        .await
-        .map_err(|e| e.to_string())?;
-    stdin.write_all(b"\n").await.map_err(|e| e.to_string())?;
+    {
+        let mut guard = stdin.lock().await;
+        guard
+            .write_all(request_json.as_bytes())
+            .await
+            .map_err(|e| e.to_string())?;
+        guard.write_all(b"\n").await.map_err(|e| e.to_string())?;
+    }
+
+    // Spawn interrupt handler if receiver provided
+    let stdin_for_interrupt = stdin.clone();
+    let interrupt_handle = interrupt_rx.map(|mut rx| {
+        tokio::spawn(async move {
+            while let Some(cmd) = rx.recv().await {
+                let _ = send_interrupt(&stdin_for_interrupt, cmd).await;
+            }
+        })
+    });
 
     let stdout = child.stdout.take().expect("Failed to open stdout");
     let reader = BufReader::new(stdout);
@@ -146,11 +205,12 @@ async fn run_research_query(
                             let answers_msg = ClarifyingAnswers { answers };
                             let answers_json =
                                 serde_json::to_string(&answers_msg).map_err(|e| e.to_string())?;
-                            stdin
+                            let mut guard = stdin.lock().await;
+                            guard
                                 .write_all(answers_json.as_bytes())
                                 .await
                                 .map_err(|e| e.to_string())?;
-                            stdin.write_all(b"\n").await.map_err(|e| e.to_string())?;
+                            guard.write_all(b"\n").await.map_err(|e| e.to_string())?;
                             answers_sent = true;
                         }
                         Err(_) => {
@@ -181,6 +241,9 @@ async fn run_research_query(
                     )
                     .await;
                 }
+                Response::Decision { .. } => {
+                    // Decision events are displayed via TUI status updates
+                }
                 Response::Report {
                     markdown_report, ..
                 } => {
@@ -202,6 +265,11 @@ async fn run_research_query(
 
             let _ = event_tx.send(AppEvent::BackendResponse(response));
         }
+    }
+
+    // Clean up interrupt handler
+    if let Some(handle) = interrupt_handle {
+        handle.abort();
     }
 
     drop(stdin);
@@ -331,6 +399,14 @@ async fn run_single_query(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                     {
                         output.warning(&format!("failed to write response: {}", e));
                     }
+                }
+                Response::Decision {
+                    action,
+                    reason,
+                    remaining_searches,
+                    remaining_iterations,
+                } => {
+                    output.decision(&action, &reason, remaining_searches, remaining_iterations);
                 }
                 Response::Report {
                     short_summary,

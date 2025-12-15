@@ -1,0 +1,5 @@
+{
+  "agent": "clarifier",
+  "sequence": 1,
+  "content": "[\n  {\n    \"label\": \"Preference Criteria\",\n    \"question\": \"What specific features or qualities are most important to you in choosing between iPhone and Samsung?\"\n  },\n  {\n    \"label\": \"Model Interest\",\n    \"question\": \"Are you interested in specific models of iPhone or Samsung, or are you looking for a general comparison?\"\n  },\n  {\n    \"label\": \"Budget Range\",\n    \"question\": \"Do you have a budget range in mind for your purchase?\"\n  }\n]"
+}

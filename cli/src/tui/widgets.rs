@@ -142,7 +142,7 @@ fn wrapped_line_count(line: &Line, width: usize) -> usize {
     if char_count == 0 {
         return 1;
     }
-    (char_count + width - 1) / width
+    char_count.div_ceil(width)
 }
 
 pub fn calculate_total_lines(app: &App, width: u16) -> usize {
@@ -157,7 +157,7 @@ pub fn calculate_total_lines(app: &App, width: u16) -> usize {
                 let content_len = msg.content.chars().count();
                 let total_len = prefix_len + content_len;
                 count += if available_width > 0 {
-                    (total_len + available_width - 1) / available_width
+                    total_len.div_ceil(available_width)
                 } else {
                     1
                 };
@@ -167,7 +167,7 @@ pub fn calculate_total_lines(app: &App, width: u16) -> usize {
                 let content_len = msg.content.chars().count();
                 let total_len = prefix_len + content_len;
                 count += if available_width > 0 {
-                    (total_len + available_width - 1) / available_width
+                    total_len.div_ceil(available_width)
                 } else {
                     1
                 };

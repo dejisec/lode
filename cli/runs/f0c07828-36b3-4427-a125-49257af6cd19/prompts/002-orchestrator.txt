@@ -1,0 +1,15 @@
+Research Query: iphone or samsung
+
+User provided additional context:
+- doesn't matter
+- general
+- no
+
+
+Budget Constraints:
+- Maximum searches: 15
+- Maximum iterations: 10
+- Initial search plan size: 5
+
+Begin your research process. Use your tools strategically to gather comprehensive 
+information, then hand off to the writer when ready.

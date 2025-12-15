@@ -31,7 +31,10 @@ impl Output {
         match self.mode {
             OutputMode::Human => {
                 eprintln!("Starting research run: {}", run_id);
-                eprintln!("Model: {}, Searches: {}", config.model, config.search_count);
+                eprintln!(
+                    "Model: {}, Searches: {} (max: {}), Iterations: {}",
+                    config.model, config.search_count, config.max_searches, config.max_iterations
+                );
                 eprintln!("Artifacts: {}", artifacts_dir.display());
             }
             OutputMode::Quiet => {}
@@ -44,6 +47,9 @@ impl Output {
                     artifacts_dir: &'a str,
                     model: &'a str,
                     search_count: u32,
+                    max_iterations: u32,
+                    max_searches: u32,
+                    auto_decide: bool,
                 }
                 let msg = Start {
                     r#type: "start",
@@ -52,6 +58,9 @@ impl Output {
                     artifacts_dir: &artifacts_dir.display().to_string(),
                     model: &config.model,
                     search_count: config.search_count,
+                    max_iterations: config.max_iterations,
+                    max_searches: config.max_searches,
+                    auto_decide: config.auto_decide,
                 };
                 println!("{}", serde_json::to_string(&msg).unwrap());
             }
@@ -140,6 +149,43 @@ impl Output {
                     r#type: "response",
                     agent,
                     sequence,
+                };
+                println!("{}", serde_json::to_string(&msg).unwrap());
+            }
+        }
+    }
+
+    pub fn decision(
+        &self,
+        action: &str,
+        reason: &str,
+        remaining_searches: u32,
+        remaining_iterations: u32,
+    ) {
+        match self.mode {
+            OutputMode::Human => {
+                eprintln!(
+                    "🤔 Decision: {} (searches: {}, iterations: {})",
+                    action, remaining_searches, remaining_iterations
+                );
+                eprintln!("   Reason: {}", reason);
+            }
+            OutputMode::Quiet => {}
+            OutputMode::Json => {
+                #[derive(Serialize)]
+                struct Decision<'a> {
+                    r#type: &'static str,
+                    action: &'a str,
+                    reason: &'a str,
+                    remaining_searches: u32,
+                    remaining_iterations: u32,
+                }
+                let msg = Decision {
+                    r#type: "decision",
+                    action,
+                    reason,
+                    remaining_searches,
+                    remaining_iterations,
                 };
                 println!("{}", serde_json::to_string(&msg).unwrap());
             }

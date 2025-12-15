@@ -28,6 +28,36 @@ pub struct TokenUsage {
     pub total_tokens: u32,
 }
 
+#[derive(Clone, Copy, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum InterruptCommand {
+    Stop,
+    #[allow(dead_code)]
+    Pause,
+    #[allow(dead_code)]
+    ForceWrite,
+}
+
+#[derive(Serialize)]
+pub struct Interrupt {
+    #[serde(rename = "type")]
+    pub msg_type: &'static str,
+    pub command: InterruptCommand,
+}
+
+impl Interrupt {
+    pub fn new(command: InterruptCommand) -> Self {
+        Self {
+            msg_type: "interrupt",
+            command,
+        }
+    }
+
+    pub fn to_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_default()
+    }
+}
+
 #[derive(Clone, Deserialize)]
 #[serde(tag = "type", rename_all = "snake_case")]
 pub enum Response {
@@ -53,6 +83,12 @@ pub enum Response {
         sequence: u32,
         content: String,
         token_usage: Option<TokenUsage>,
+    },
+    Decision {
+        action: String,
+        reason: String,
+        remaining_searches: u32,
+        remaining_iterations: u32,
     },
     Report {
         short_summary: String,
