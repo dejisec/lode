@@ -1,0 +1,12 @@
+{
+  "version": "v1",
+  "run_id": "56cfafcf-1ef1-4020-bfc6-ba3de8ae9e59",
+  "query": "greatest basketball player",
+  "config": {
+    "model": "gpt-4o",
+    "search_count": 5,
+    "max_iterations": 10,
+    "max_searches": 15,
+    "auto_decide": true
+  }
+}

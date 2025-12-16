@@ -16,6 +16,19 @@ use tokio::sync::mpsc;
 use crate::protocol::{ClarifyingQuestion, Response};
 use widgets::{ChatMessage, MessageRole, calculate_total_lines, render_ui};
 
+const SPINNER_FRAMES: [&str; 4] = ["-", "\\", "|", "/"];
+
+#[derive(Clone, Copy, PartialEq, Eq)]
+pub enum AppPhase {
+    Idle,
+    AwaitingClarification,
+    Clarifying,
+    Confirming,
+    Researching,
+    Completed,
+    Error,
+}
+
 #[derive(Clone)]
 pub struct ClarifyingState {
     pub questions: Vec<ClarifyingQuestion>,
@@ -34,6 +47,8 @@ pub struct App {
     pub terminal_width: u16,
     pub require_confirmation: bool,
     pub pending_answers: Option<Vec<String>>,
+    pub phase: AppPhase,
+    spinner_index: usize,
     event_rx: Option<mpsc::UnboundedReceiver<AppEvent>>,
     event_tx: mpsc::UnboundedSender<AppEvent>,
 }
@@ -58,6 +73,8 @@ impl App {
             terminal_width: 80, // default, updated on each draw
             require_confirmation,
             pending_answers: None,
+            phase: AppPhase::Idle,
+            spinner_index: 0,
             event_rx: Some(event_rx),
             event_tx,
         }
@@ -75,6 +92,10 @@ impl App {
         self.clarifying
             .as_ref()
             .and_then(|state| state.questions.get(state.current_index))
+    }
+
+    pub fn is_confirming(&self) -> bool {
+        matches!(self.phase, AppPhase::Confirming)
     }
 
     pub fn event_sender(&self) -> mpsc::UnboundedSender<AppEvent> {
@@ -109,6 +130,58 @@ impl App {
         self.status = status;
     }
 
+    fn spinner_frame(&self) -> &str {
+        if self.is_processing {
+            SPINNER_FRAMES[self.spinner_index % SPINNER_FRAMES.len()]
+        } else {
+            " "
+        }
+    }
+
+    fn advance_spinner(&mut self) {
+        if self.is_processing {
+            self.spinner_index = self.spinner_index.wrapping_add(1);
+        } else {
+            self.spinner_index = 0;
+        }
+    }
+
+    fn phase_label(&self) -> &'static str {
+        match self.phase {
+            AppPhase::Idle => "Idle",
+            AppPhase::AwaitingClarification => "Clarifying",
+            AppPhase::Clarifying => "Clarifying",
+            AppPhase::Confirming => "Confirm",
+            AppPhase::Researching => "Researching",
+            AppPhase::Completed => "Complete",
+            AppPhase::Error => "Error",
+        }
+    }
+
+    fn default_status(&self) -> String {
+        match self.phase {
+            AppPhase::Idle => "Type a query and press Enter. Esc to quit.".to_string(),
+            AppPhase::AwaitingClarification => "Generating clarifying questions...".to_string(),
+            AppPhase::Clarifying => {
+                if let Some(state) = &self.clarifying {
+                    format!(
+                        "Answer question {} of {}",
+                        state.current_index + 1,
+                        state.questions.len()
+                    )
+                } else {
+                    "Answer the clarifying questions.".to_string()
+                }
+            }
+            AppPhase::Confirming => "Type 'confirm' to continue or 'cancel' to abort.".to_string(),
+            AppPhase::Researching => "Working... Press Esc to stop.".to_string(),
+            AppPhase::Completed => {
+                "Research complete. Enter another query or Esc to quit.".to_string()
+            }
+            AppPhase::Error => "Run failed. Enter another query or Esc to quit.".to_string(),
+        }
+    }
+
     fn scroll_to_bottom(&mut self) {
         self.scroll_offset = 0; // 0 = at bottom
     }
@@ -131,12 +204,14 @@ impl App {
                     current_index: 0,
                     answers: Vec::new(),
                 });
-                self.set_status(Some("Answer question 1 of 3".to_string()));
+                self.set_status(None);
+                self.phase = AppPhase::Clarifying;
             }
             Response::Prompt {
                 agent, sequence, ..
             } => {
                 self.set_status(Some(format!("Running {} (step {})", agent, sequence)));
+                self.phase = AppPhase::Researching;
             }
             Response::AgentOutput {
                 agent, sequence, ..
@@ -145,6 +220,7 @@ impl App {
                     "Received {} response (step {})",
                     agent, sequence
                 )));
+                self.phase = AppPhase::Researching;
             }
             Response::Decision {
                 action,
@@ -156,6 +232,7 @@ impl App {
                     "Decision: {} (budget: {} searches, {} iterations)",
                     action, remaining_searches, remaining_iterations
                 )));
+                self.phase = AppPhase::Researching;
             }
             Response::Report {
                 short_summary,
@@ -163,6 +240,7 @@ impl App {
                 ..
             } => {
                 self.set_status(None);
+                self.phase = AppPhase::Completed;
                 let content = format!("**{}**\n\n{}", short_summary, markdown_report);
                 self.add_assistant_message(content);
             }
@@ -172,6 +250,7 @@ impl App {
                 } else {
                     format!("Error: {}", message)
                 };
+                self.phase = AppPhase::Error;
                 self.add_system_message(msg);
             }
             Response::Done { .. } | Response::Metadata { .. } => {}
@@ -179,6 +258,7 @@ impl App {
     }
 
     fn process_events(&mut self) {
+        self.advance_spinner();
         let events: Vec<AppEvent> = if let Some(ref mut rx) = self.event_rx {
             let mut collected = Vec::new();
             while let Ok(event) = rx.try_recv() {
@@ -197,6 +277,11 @@ impl App {
                 AppEvent::RunComplete { success, run_id } => {
                     self.is_processing = false;
                     self.set_status(None);
+                    self.phase = if success {
+                        AppPhase::Completed
+                    } else {
+                        AppPhase::Error
+                    };
                     if success {
                         self.add_system_message(format!("Research complete ({})", &run_id[..8]));
                     } else {
@@ -206,6 +291,7 @@ impl App {
                 AppEvent::Error(msg) => {
                     self.is_processing = false;
                     self.set_status(None);
+                    self.phase = AppPhase::Error;
                     self.add_system_message(format!("Error: {}", msg));
                 }
             }
@@ -271,6 +357,7 @@ impl Tui {
                         if app.is_processing {
                             on_interrupt();
                             app.add_system_message("Stopping research...".to_string());
+                            app.phase = AppPhase::Researching;
                         } else {
                             app.should_quit = true;
                         }
@@ -279,6 +366,7 @@ impl Tui {
                         if app.is_processing {
                             on_interrupt();
                             app.add_system_message("Stopping research...".to_string());
+                            app.phase = AppPhase::Researching;
                         }
                         app.should_quit = true;
                     }
@@ -302,6 +390,7 @@ impl Tui {
                             if confirmed {
                                 if let Some(answers) = app.pending_answers.take() {
                                     app.set_status(Some("Continuing research...".to_string()));
+                                    app.phase = AppPhase::Researching;
                                     on_answers(answers, true);
                                 }
                             } else if cancelled {
@@ -310,6 +399,7 @@ impl Tui {
                                     app.add_system_message(
                                         "Research cancelled before execution.".to_string(),
                                     );
+                                    app.phase = AppPhase::Completed;
                                     on_answers(answers, false);
                                 }
                             } else {
@@ -355,9 +445,11 @@ impl Tui {
                                         app.set_status(Some(
                                             "Awaiting confirmation...".to_string(),
                                         ));
+                                        app.phase = AppPhase::Confirming;
                                     }
                                 } else {
                                     app.set_status(Some("Continuing research...".to_string()));
+                                    app.phase = AppPhase::Researching;
                                     if let Some(answers) = answers {
                                         on_answers(answers, true);
                                     }
@@ -368,6 +460,7 @@ impl Tui {
                                     next_index + 1,
                                     total
                                 )));
+                                app.phase = AppPhase::Clarifying;
                             }
                         } else if !app.input.is_empty() && !app.is_processing {
                             let query = app.input.clone();
@@ -375,16 +468,19 @@ impl Tui {
                             app.add_user_message(query.clone());
                             app.is_processing = true;
                             app.set_status(Some("Starting research...".to_string()));
+                            app.phase = AppPhase::AwaitingClarification;
                             on_submit(&query);
                         }
                     }
                     KeyCode::Backspace => {
-                        if app.is_clarifying() || app.awaiting_confirmation() || !app.is_processing {
+                        if app.is_clarifying() || app.awaiting_confirmation() || !app.is_processing
+                        {
                             app.input.pop();
                         }
                     }
                     KeyCode::Char(c) => {
-                        if app.is_clarifying() || app.awaiting_confirmation() || !app.is_processing {
+                        if app.is_clarifying() || app.awaiting_confirmation() || !app.is_processing
+                        {
                             app.input.push(c);
                         }
                     }

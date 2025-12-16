@@ -192,7 +192,7 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             (Color::Magenta, " Answer ".to_string())
         }
-    } else if app.awaiting_confirmation() {
+    } else if app.is_confirming() || app.awaiting_confirmation() {
         (Color::Magenta, " Confirm ".to_string())
     } else if app.is_processing {
         (Color::Yellow, " Processing... ".to_string())
@@ -230,27 +230,26 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
 }
 
 fn render_status_bar(frame: &mut Frame, app: &App, area: Rect) {
-    let status_text = if let Some(ref status) = app.status {
-        vec![
-            Span::styled("● ", Style::default().fg(Color::Yellow)),
-            Span::styled(status.as_str(), Style::default().fg(Color::DarkGray)),
-        ]
-    } else if app.is_processing {
-        vec![
-            Span::styled("● ", Style::default().fg(Color::Yellow)),
-            Span::styled("Working...", Style::default().fg(Color::DarkGray)),
-        ]
+    let message = if let Some(ref status) = app.status {
+        status.clone()
     } else {
-        vec![
-            Span::styled("↑↓", Style::default().fg(Color::DarkGray)),
-            Span::styled(" scroll  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Enter", Style::default().fg(Color::DarkGray)),
-            Span::styled(" submit  ", Style::default().fg(Color::DarkGray)),
-            Span::styled("Esc", Style::default().fg(Color::DarkGray)),
-            Span::styled(" quit", Style::default().fg(Color::DarkGray)),
-        ]
+        app.default_status()
     };
 
-    let paragraph = Paragraph::new(Line::from(status_text));
+    let spans = vec![
+        Span::styled(
+            format!(" {} ", app.spinner_frame()),
+            Style::default().fg(Color::Yellow),
+        ),
+        Span::styled(
+            format!("[{}] ", app.phase_label()),
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(message, Style::default().fg(Color::DarkGray)),
+    ];
+
+    let paragraph = Paragraph::new(Line::from(spans));
     frame.render_widget(paragraph, area);
 }

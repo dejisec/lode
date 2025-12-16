@@ -1,0 +1,5 @@
+{
+  "agent": "orchestrator",
+  "sequence": 2,
+  "content": "[error: Max turns (10) exceeded]"
+}
