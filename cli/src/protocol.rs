@@ -19,6 +19,7 @@ pub struct ClarifyingQuestion {
 #[derive(Serialize)]
 pub struct ClarifyingAnswers {
     pub answers: Vec<String>,
+    pub confirm: bool,
 }
 
 #[derive(Clone, Deserialize, Serialize)]

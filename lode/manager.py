@@ -5,7 +5,7 @@ import json
 from dataclasses import dataclass, field
 from typing import AsyncIterator, Any
 
-from agents import trace, gen_trace_id, Runner
+from agents import trace, gen_trace_id
 
 from .agents import (
     create_clarifier_agent,
@@ -14,6 +14,7 @@ from .agents import (
     ReportData,
 )
 from .config import Config
+from .openai_client import agent_runner
 
 
 @dataclass
@@ -113,10 +114,10 @@ class ResearchManager:
         seq = self._next_sequence()
         yield PromptEvent(agent="clarifier", sequence=seq, content=clarifier_prompt)
 
-        result = await Runner.run(self._clarifier_agent, clarifier_prompt)
-        questions = result.final_output_as(ClarifyingQuestions)
+        result = await agent_runner.run(self._clarifier_agent, clarifier_prompt)
+        questions = result.output.final_output_as(ClarifyingQuestions)
 
-        token_usage = self._extract_token_usage(result)
+        token_usage = result.token_usage.to_dict() if result.token_usage else None
         yield ResponseEvent(
             agent="clarifier",
             sequence=seq,
@@ -179,16 +180,50 @@ information, then hand off to the writer when ready."""
         seq: int,
     ) -> AsyncIterator[Any]:
         """Run the orchestrator agent with event streaming."""
+        orchestrator_task = asyncio.create_task(
+            agent_runner.run(self._orchestrator_agent, input_text)
+        )
         try:
-            result = await Runner.run(self._orchestrator_agent, input_text)
+            while True:
+                done, _ = await asyncio.wait(
+                    {orchestrator_task},
+                    timeout=0.1,
+                    return_when=asyncio.FIRST_COMPLETED,
+                    )
 
-            token_usage = self._extract_token_usage(result)
-            
-            final_output = result.final_output
+                interrupted, command = await self._interrupt_controller.check_interrupt()
+                if interrupted:
+                    orchestrator_task.cancel()
+                    try:
+                        await orchestrator_task
+                    except asyncio.CancelledError:
+                        pass
+
+                    reason = "Interrupted by user command"
+                    if command:
+                        reason = f"Interrupted by command: {command}"
+                    yield DecisionEvent(
+                        action="interrupt",
+                        reason=reason,
+                        remaining_searches=self._config.max_searches - self._searches_used,
+                        remaining_iterations=self._config.max_iterations - self._iterations_used,
+                    )
+                    yield "Research interrupted"
+                    return
+
+                if orchestrator_task in done:
+                    break
+            result = await orchestrator_task
+
+            token_usage = result.token_usage.to_dict() if result.token_usage else None
+
+            final_output = result.output.final_output
             if hasattr(final_output, 'model_dump'):
                 output_content = json.dumps(final_output.model_dump(), indent=2)
             else:
                 output_content = str(final_output)
+
+            self._update_budget_usage(final_output)
 
             yield ResponseEvent(
                 agent="orchestrator",
@@ -218,6 +253,43 @@ information, then hand off to the writer when ready."""
             )
             raise
 
+    def _update_budget_usage(self, output: Any) -> None:
+        """Update budget counters from the orchestrator's output if available."""
+
+        def _extract(obj: Any, key: str) -> int | None:
+            if hasattr(obj, key):
+                value = getattr(obj, key)
+                if isinstance(value, int):
+                    return value
+                if hasattr(value, "model_dump"):
+                    try:
+                        data = value.model_dump()
+                    except Exception:
+                        data = None
+                    if isinstance(data, dict) and isinstance(data.get(key), int):
+                        return data[key]
+
+            if hasattr(obj, "model_dump"):
+                try:
+                    data = obj.model_dump()
+                except Exception:
+                    data = None
+                if isinstance(data, dict) and isinstance(data.get(key), int):
+                    return data[key]
+
+            if isinstance(obj, dict) and isinstance(obj.get(key), int):
+                return obj[key]
+
+            return None
+
+        searches = _extract(output, "searches_performed")
+        iterations = _extract(output, "iterations")
+
+        if searches is not None:
+            self._searches_used = searches
+        if iterations is not None:
+            self._iterations_used = iterations
+
     def _extract_report(self, output: Any) -> ReportData | None:
         """Try to extract ReportData from various output formats."""
         if isinstance(output, ReportData):
@@ -241,24 +313,4 @@ information, then hand off to the writer when ready."""
                 except Exception:
                     pass
         
-        return None
-
-    def _extract_token_usage(self, result) -> dict[str, int] | None:
-        """Extract token usage from a RunResult."""
-        try:
-            if hasattr(result, "raw_responses") and result.raw_responses:
-                total_prompt = 0
-                total_completion = 0
-                for response in result.raw_responses:
-                    if hasattr(response, "usage") and response.usage:
-                        total_prompt += getattr(response.usage, "prompt_tokens", 0) or 0
-                        total_completion += getattr(response.usage, "completion_tokens", 0) or 0
-                if total_prompt > 0 or total_completion > 0:
-                    return {
-                        "prompt_tokens": total_prompt,
-                        "completion_tokens": total_completion,
-                        "total_tokens": total_prompt + total_completion,
-                    }
-        except Exception:
-            pass
         return None

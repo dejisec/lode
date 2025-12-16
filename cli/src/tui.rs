@@ -32,6 +32,8 @@ pub struct App {
     pub should_quit: bool,
     pub clarifying: Option<ClarifyingState>,
     pub terminal_width: u16,
+    pub require_confirmation: bool,
+    pub pending_answers: Option<Vec<String>>,
     event_rx: Option<mpsc::UnboundedReceiver<AppEvent>>,
     event_tx: mpsc::UnboundedSender<AppEvent>,
 }
@@ -43,7 +45,7 @@ pub enum AppEvent {
 }
 
 impl App {
-    pub fn new() -> Self {
+    pub fn new(require_confirmation: bool) -> Self {
         let (event_tx, event_rx) = mpsc::unbounded_channel();
         Self {
             messages: Vec::new(),
@@ -54,6 +56,8 @@ impl App {
             should_quit: false,
             clarifying: None,
             terminal_width: 80, // default, updated on each draw
+            require_confirmation,
+            pending_answers: None,
             event_rx: Some(event_rx),
             event_tx,
         }
@@ -61,6 +65,10 @@ impl App {
 
     pub fn is_clarifying(&self) -> bool {
         self.clarifying.is_some()
+    }
+
+    pub fn awaiting_confirmation(&self) -> bool {
+        self.pending_answers.is_some()
     }
 
     pub fn current_question(&self) -> Option<&ClarifyingQuestion> {
@@ -234,7 +242,7 @@ impl Tui {
     ) -> io::Result<()>
     where
         F: FnMut(&str) + Send,
-        G: FnMut(Vec<String>) + Send,
+        G: FnMut(Vec<String>, bool) + Send,
         H: FnMut() + Send,
     {
         loop {
@@ -275,6 +283,43 @@ impl Tui {
                         app.should_quit = true;
                     }
                     KeyCode::Enter => {
+                        if app.awaiting_confirmation() {
+                            let user_input = app.input.trim().to_string();
+                            let lowered = user_input.to_lowercase();
+                            app.input.clear();
+
+                            if !user_input.is_empty() {
+                                app.add_user_message(user_input.clone());
+                            }
+
+                            let confirmed = matches!(
+                                lowered.as_str(),
+                                "" | "y" | "yes" | "confirm" | "continue" | "proceed"
+                            );
+                            let cancelled =
+                                matches!(lowered.as_str(), "n" | "no" | "cancel" | "stop" | "quit");
+
+                            if confirmed {
+                                if let Some(answers) = app.pending_answers.take() {
+                                    app.set_status(Some("Continuing research...".to_string()));
+                                    on_answers(answers, true);
+                                }
+                            } else if cancelled {
+                                if let Some(answers) = app.pending_answers.take() {
+                                    app.set_status(Some("Cancelling research...".to_string()));
+                                    app.add_system_message(
+                                        "Research cancelled before execution.".to_string(),
+                                    );
+                                    on_answers(answers, false);
+                                }
+                            } else {
+                                app.add_system_message(
+                                    "Type 'confirm' to continue or 'cancel' to abort.".to_string(),
+                                );
+                            }
+                            continue;
+                        }
+
                         if app.is_clarifying() {
                             let answer = app.input.clone();
                             app.input.clear();
@@ -300,9 +345,22 @@ impl Tui {
 
                             if is_complete {
                                 app.clarifying = None;
-                                app.set_status(Some("Continuing research...".to_string()));
-                                if let Some(answers) = answers {
-                                    on_answers(answers);
+                                if app.require_confirmation {
+                                    if let Some(answers) = answers {
+                                        app.pending_answers = Some(answers);
+                                        app.add_system_message(
+                                            "Type 'confirm' to continue or 'cancel' to abort."
+                                                .to_string(),
+                                        );
+                                        app.set_status(Some(
+                                            "Awaiting confirmation...".to_string(),
+                                        ));
+                                    }
+                                } else {
+                                    app.set_status(Some("Continuing research...".to_string()));
+                                    if let Some(answers) = answers {
+                                        on_answers(answers, true);
+                                    }
                                 }
                             } else {
                                 app.set_status(Some(format!(
@@ -321,12 +379,12 @@ impl Tui {
                         }
                     }
                     KeyCode::Backspace => {
-                        if app.is_clarifying() || !app.is_processing {
+                        if app.is_clarifying() || app.awaiting_confirmation() || !app.is_processing {
                             app.input.pop();
                         }
                     }
                     KeyCode::Char(c) => {
-                        if app.is_clarifying() || !app.is_processing {
+                        if app.is_clarifying() || app.awaiting_confirmation() || !app.is_processing {
                             app.input.push(c);
                         }
                     }

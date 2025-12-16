@@ -131,4 +131,3 @@ pub async fn write_metadata(
     fs::write(path, content).await?;
     Ok(())
 }
-

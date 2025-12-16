@@ -192,6 +192,8 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
         } else {
             (Color::Magenta, " Answer ".to_string())
         }
+    } else if app.awaiting_confirmation() {
+        (Color::Magenta, " Confirm ".to_string())
     } else if app.is_processing {
         (Color::Yellow, " Processing... ".to_string())
     } else {
@@ -209,13 +211,15 @@ fn render_input(frame: &mut Frame, app: &App, area: Rect) {
 
     let display_text = if app.is_clarifying() {
         format!("{}▏", app.input)
+    } else if app.awaiting_confirmation() {
+        format!("{}▏", app.input)
     } else if app.is_processing {
         app.status.clone().unwrap_or_default()
     } else {
         format!("{}▏", app.input)
     };
 
-    let text_style = if app.is_processing && !app.is_clarifying() {
+    let text_style = if app.is_processing && !app.is_clarifying() && !app.awaiting_confirmation() {
         Style::default().fg(Color::DarkGray).italic()
     } else {
         Style::default().fg(Color::White)

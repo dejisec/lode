@@ -37,11 +37,12 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
 async fn run_tui(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
     let config = load_config(cli);
-    let mut app = App::new();
+    let mut app = App::new(!config.auto_decide);
     let mut tui_instance = Tui::new()?;
 
     let event_tx = app.event_sender();
-    let answer_slot: Arc<Mutex<Option<oneshot::Sender<Vec<String>>>>> = Arc::new(Mutex::new(None));
+    let answer_slot: Arc<Mutex<Option<oneshot::Sender<(Vec<String>, bool)>>>> =
+        Arc::new(Mutex::new(None));
     let interrupt_tx: Arc<Mutex<Option<mpsc::UnboundedSender<InterruptCommand>>>> =
         Arc::new(Mutex::new(None));
 
@@ -81,12 +82,12 @@ async fn run_tui(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                     }
                 });
             },
-            move |answers| {
+            move |answers, confirm| {
                 let slot = answer_slot_answers.clone();
                 tokio::spawn(async move {
                     let mut guard = slot.lock().await;
                     if let Some(tx) = guard.take() {
-                        let _ = tx.send(answers);
+                        let _ = tx.send((answers, confirm));
                     }
                 });
             },
@@ -125,7 +126,7 @@ async fn run_research_query(
     query: &str,
     config: &RequestConfig,
     event_tx: mpsc::UnboundedSender<AppEvent>,
-    answer_slot: Arc<Mutex<Option<oneshot::Sender<Vec<String>>>>>,
+    answer_slot: Arc<Mutex<Option<oneshot::Sender<(Vec<String>, bool)>>>>,
     interrupt_rx: Option<mpsc::UnboundedReceiver<InterruptCommand>>,
 ) -> Result<(), String> {
     let run_id = Uuid::new_v4().to_string();
@@ -153,7 +154,9 @@ async fn run_research_query(
         .spawn()
         .map_err(|e| e.to_string())?;
 
-    let stdin = Arc::new(Mutex::new(child.stdin.take().expect("Failed to open stdin")));
+    let stdin = Arc::new(Mutex::new(
+        child.stdin.take().expect("Failed to open stdin"),
+    ));
     let request_json = serde_json::to_string(&request).map_err(|e| e.to_string())?;
     {
         let mut guard = stdin.lock().await;
@@ -201,8 +204,8 @@ async fn run_research_query(
                     }
 
                     match rx.await {
-                        Ok(answers) => {
-                            let answers_msg = ClarifyingAnswers { answers };
+                        Ok((answers, confirm)) => {
+                            let answers_msg = ClarifyingAnswers { answers, confirm };
                             let answers_json =
                                 serde_json::to_string(&answers_msg).map_err(|e| e.to_string())?;
                             let mut guard = stdin.lock().await;
@@ -232,14 +235,9 @@ async fn run_research_query(
                     content,
                     token_usage,
                 } => {
-                    let _ = write_raw_response(
-                        &ctx,
-                        agent,
-                        *sequence,
-                        content,
-                        token_usage.as_ref(),
-                    )
-                    .await;
+                    let _ =
+                        write_raw_response(&ctx, agent, *sequence, content, token_usage.as_ref())
+                            .await;
                 }
                 Response::Decision { .. } => {
                     // Decision events are displayed via TUI status updates
@@ -367,7 +365,32 @@ async fn run_single_query(cli: &Cli) -> Result<(), Box<dyn std::error::Error>> {
                     }
 
                     eprintln!();
-                    let answers_msg = ClarifyingAnswers { answers };
+
+                    let mut confirm = config.auto_decide;
+                    if !config.auto_decide {
+                        loop {
+                            eprint!("Proceed with research? [y/n]: ");
+                            std::io::stderr().flush().ok();
+                            let mut choice = String::new();
+                            term_stdin.lock().read_line(&mut choice).ok();
+                            match choice.trim().to_lowercase().as_str() {
+                                "" | "y" | "yes" => {
+                                    confirm = true;
+                                    break;
+                                }
+                                "n" | "no" => {
+                                    confirm = false;
+                                    break;
+                                }
+                                _ => {
+                                    eprintln!("Please enter 'y' or 'n'.");
+                                }
+                            }
+                        }
+                        eprintln!();
+                    }
+
+                    let answers_msg = ClarifyingAnswers { answers, confirm };
                     let answers_json = serde_json::to_string(&answers_msg)?;
                     stdin.write_all(answers_json.as_bytes()).await?;
                     stdin.write_all(b"\n").await?;

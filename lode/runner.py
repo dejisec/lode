@@ -234,14 +234,16 @@ async def run_research(
     emit_metadata(request.config.model, duration_ms)
 
 
-def read_clarifying_answers() -> list[str] | None:
+def read_clarifying_answers() -> tuple[list[str], bool] | None:
     """Read clarifying answers from stdin (second JSON line)."""
     line = sys.stdin.readline().strip()
     if not line:
         return None
     try:
         data = json.loads(line)
-        return data.get("answers", [])
+        answers = data.get("answers", [])
+        confirm = data.get("confirm", True)
+        return answers, bool(confirm)
     except json.JSONDecodeError:
         return None
 
@@ -268,7 +270,18 @@ async def async_main() -> None:
         await run_clarify(request, manager)
 
         # Phase 2: Wait for answers from stdin
-        clarifying_answers = read_clarifying_answers()
+        confirm_continue = True
+        clarifying_answers: list[str] | None = None
+        answers_payload = read_clarifying_answers()
+        if answers_payload:
+            clarifying_answers, confirm_continue = answers_payload
+
+        if not confirm_continue:
+            emit_status("User cancelled after clarification phase")
+            duration_ms = int((time.time() - start_time) * 1000)
+            emit_metadata(request.config.model, duration_ms)
+            emit_done(True)
+            return
 
         # Phase 3: Run agentic research with interrupt listener
         stop_event = asyncio.Event()

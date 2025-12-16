@@ -1,6 +1,6 @@
 # Lode
 
-Multi-agent research system that orchestrates AI agents to perform deep web research and synthesize comprehensive reports.
+Multi-agent research system that orchestrates AI agents to perform deep web research and synthesize comprehensive reports. Builds on the concepts taught in Week 2 of [Ed Donner's Agentic AI course](https://www.udemy.com/course/the-complete-agentic-ai-engineering-course/)
 
 ![Lode](assets/lode.png)
 
@@ -27,11 +27,17 @@ Lode uses a hybrid Rust/Python architecture:
 
 ### Agents
 
+Lode coordinates a fixed set of specialists:
+
 | Agent | Role |
 |-------|------|
-| **Planner** | Generates search strategy from query |
-| **Search** | Executes web searches, summarizes results |
-| **Writer** | Synthesizes research into comprehensive report |
+| **Clarifier** | Asks exactly three questions to disambiguate the user’s intent before any API-heavy work starts |
+| **Planner** | Generates a structured list of web searches tailored to the clarified query |
+| **Search** | Runs each web search (via OpenAI WebSearchTool) and summarizes the findings concisely |
+| **Evaluator** | Scores coverage/depth, flags gaps, and recommends whether more searches are needed |
+| **Writer** | Turns the collected research into a final multi-page markdown report |
+
+The **Orchestrator** agent wields **Planner** → **Search** → **Evaluator** → **Writer** as tools, looping until the evaluator says coverage is good, then handing off to the writer to produce the final report.
 
 ## Installation
 
@@ -117,6 +123,7 @@ Arguments:
 Options:
       --model <MODEL>                OpenAI model (default: gpt-4o, env: LODE_MODEL)
       --search-count <SEARCH_COUNT>  Number of searches (default: 5, env: LODE_SEARCH_COUNT)
+      --no-auto                      Require manual confirmation before running research
       --json                         Output JSON lines instead of human-readable
   -q, --quiet                        Suppress progress, show only report and errors
   -h, --help                         Print help

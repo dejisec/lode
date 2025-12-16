@@ -3,7 +3,6 @@
 from pydantic import BaseModel, Field
 from agents import Agent, handoff
 
-from .clarifier import create_clarifier_agent
 from .planner import create_planner_agent
 from .search import create_search_agent
 from .evaluator import create_evaluator_agent
@@ -23,26 +22,22 @@ use them effectively within your budget constraints.
 
 ## Your Tools
 
-1. **clarify_query**: Generate clarifying questions to better understand user intent. 
-   Use early if the query is ambiguous.
-
-2. **plan_searches**: Given a query and context, generate a list of search queries.
+1. **plan_searches**: Given a query and context, generate a list of search queries.
    Returns a structured plan with reasons for each search.
 
-3. **execute_search**: Execute a single web search and get summarized results.
+2. **execute_search**: Execute a single web search and get summarized results.
    Call this for each search query you want to execute.
 
-4. **evaluate_research**: Assess current research quality and identify gaps.
+3. **evaluate_research**: Assess current research quality and identify gaps.
    Use this to decide if you need more searches or can proceed to writing.
 
 ## Your Process
 
-1. If the query is ambiguous, use clarify_query first
-2. Use plan_searches to create an initial research plan
-3. Execute searches from the plan using execute_search
-4. Use evaluate_research to assess coverage
-5. If gaps exist and budget allows, plan and execute additional searches
-6. When research is sufficient, hand off to the writer agent
+1. Use plan_searches to create an initial research plan
+2. Execute searches from the plan using execute_search
+3. Use evaluate_research to assess coverage
+4. If gaps exist and budget allows, plan and execute additional searches
+5. When research is sufficient, hand off to the writer agent
 
 ## Budget Constraints
 
@@ -56,7 +51,11 @@ After each evaluation:
 - If coverage_score < 7 and budget remains: Execute gap-filling searches
 - If budget exhausted: Proceed to writing with current research
 
-Always explain your reasoning before taking actions."""
+Always explain your reasoning before taking actions.
+
+## Final Report Requirement
+
+When you determine the research is sufficient, you **must** hand off to the writer tool using the provided `handoff`. Do not summarize findings yourself. Passing the baton to the writer is the only way the user receives a full report, so make sure you explicitly invoke it once readiness is confirmed."""
 
 
 def create_orchestrator_agent(
@@ -66,16 +65,10 @@ def create_orchestrator_agent(
     max_searches: int,
 ) -> Agent:
     """Create the orchestrator agent with all sub-agents as tools."""
-    clarifier = create_clarifier_agent(model)
     planner = create_planner_agent(model, search_count)
     searcher = create_search_agent(model)
     evaluator = create_evaluator_agent(model)
     writer = create_writer_agent(model)
-
-    clarifier_tool = clarifier.as_tool(
-        tool_name="clarify_query",
-        tool_description="Generate clarifying questions to better understand the user's query.",
-    )
 
     planner_tool = planner.as_tool(
         tool_name="plan_searches",
@@ -105,7 +98,6 @@ Track your usage and remaining budget in your reasoning."""
         name="OrchestratorAgent",
         instructions=dynamic_instructions,
         model=model,
-        tools=[clarifier_tool, planner_tool, search_tool, evaluator_tool],
+        tools=[planner_tool, search_tool, evaluator_tool],
         handoffs=[handoff(writer)],
     )
-
