@@ -1,8 +1,0 @@
-{
-  "run_id": "56cfafcf-1ef1-4020-bfc6-ba3de8ae9e59",
-  "model": null,
-  "total_tokens": null,
-  "duration_ms": 126076,
-  "trace_id": "trace_599ed7ae66294788a96dd398535569e8",
-  "trace_url": "https://platform.openai.com/traces/trace?trace_id=trace_599ed7ae66294788a96dd398535569e8"
-}

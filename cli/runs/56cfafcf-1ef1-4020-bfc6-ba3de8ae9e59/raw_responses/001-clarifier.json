@@ -1,5 +1,0 @@
-{
-  "agent": "clarifier",
-  "sequence": 1,
-  "content": "[\n  {\n    \"label\": \"Time Period\",\n    \"question\": \"Are you looking for the greatest basketball player of a specific era or all time?\"\n  },\n  {\n    \"label\": \"Criteria\",\n    \"question\": \"What criteria are you using to define 'greatest'? (e.g., championships, stats, influence)\"\n  },\n  {\n    \"label\": \"League Focus\",\n    \"question\": \"Are you interested in NBA players only, or considering other leagues too?\"\n  }\n]"
-}
